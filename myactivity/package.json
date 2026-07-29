@@ -8,14 +8,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:ui": "node scripts/qa.mjs",
-    "firebase:emulators": "firebase emulators:start",
-    "firebase:deploy": "firebase deploy"
+    "firebase:emulators": "firebase emulators:start --only auth,firestore",
+    "firebase:deploy": "firebase deploy --only firestore:rules,firestore:indexes"
   },
   "devDependencies": {
     "playwright-core": "^1.62.0",
     "vite": "^8.1.1"
   },
   "dependencies": {
+    "firebase": "^12.16.0",
     "lucide-react": "^1.27.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

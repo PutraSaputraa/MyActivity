@@ -1,47 +1,116 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+} from 'firebase/auth'
+import {
+  arrayUnion,
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore'
 import { demoActivities, demoAgendas, demoCompletions, demoUser } from '../data/demoData'
+import { auth, db } from '../firebase'
 import { addDays, fromDateKey, isActivityScheduled, toDateKey } from '../lib/date'
-import { apiRequest, isDemoMode } from '../services/api'
 
 const AppContext = createContext(null)
-
-const STORAGE_KEY = 'myactivity-demo-state'
-const SESSION_KEY = 'myactivity-demo-session'
+const DEMO_STORAGE_KEY = 'myactivity-demo-state'
+const DEMO_SESSION_KEY = 'myactivity-demo-session'
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
-
 const initialDemoState = {
   activities: clone(demoActivities),
   completions: clone(demoCompletions),
   agendas: clone(demoAgendas),
 }
 
-const getStoredState = () => {
+const getDemoState = () => {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || initialDemoState
+    return JSON.parse(localStorage.getItem(DEMO_STORAGE_KEY)) || initialDemoState
   } catch {
     return initialDemoState
   }
 }
 
-const hashPassword = async (password) => {
-  const bytes = new TextEncoder().encode(password)
-  const hash = await crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+const usernameToEmail = (username) => {
+  const normalized = username.trim().toLowerCase()
+  const encoded = btoa(normalized).replaceAll('=', '').replaceAll('+', '-').replaceAll('/', '_')
+  return `u.${encoded}@users.myactivity.app`
 }
 
-export function AppProvider({ children }) {
-  const [user, setUser] = useState(() => {
-    if (!isDemoMode) return null
-    return localStorage.getItem(SESSION_KEY) ? demoUser : null
+const firebaseErrorMessage = (error) => {
+  const messages = {
+    'auth/email-already-in-use': 'Username sudah digunakan.',
+    'auth/invalid-email': 'Format username tidak valid.',
+    'auth/invalid-credential': 'Username atau password salah.',
+    'auth/user-not-found': 'Username tidak ditemukan.',
+    'auth/wrong-password': 'Password yang kamu masukkan salah.',
+    'auth/weak-password': 'Password minimal 6 karakter.',
+    'auth/too-many-requests': 'Terlalu banyak percobaan. Silakan coba lagi nanti.',
+    'auth/network-request-failed': 'Koneksi ke Firebase gagal. Periksa jaringanmu.',
+    'permission-denied': 'Akses Firestore ditolak. Periksa Security Rules.',
+  }
+  return messages[error?.code] || error?.message || 'Terjadi kesalahan. Silakan coba lagi.'
+}
+
+const serializeSnapshot = (snapshot) =>
+  snapshot.docs.map((item) => {
+    const data = item.data()
+    return {
+      id: item.id,
+      ...data,
+      createdAt: data.createdAt?.toDate?.().toISOString() || data.createdAt || null,
+      updatedAt: data.updatedAt?.toDate?.().toISOString() || data.updatedAt || null,
+      completedAt: data.completedAt?.toDate?.().toISOString() || data.completedAt || null,
+    }
   })
+
+const activityPayload = (input) => ({
+  title: input.title?.trim() || '',
+  description: input.description?.trim() || '',
+  category: input.category || 'Personal',
+  priority: input.priority || 'Medium',
+  repeatType: input.repeatType || 'once',
+  repeatDays: input.repeatDays || [],
+  startDate: input.startDate,
+  endDate: input.endDate || null,
+  excludedDates: input.excludedDates || [],
+})
+
+const agendaPayload = (input) => ({
+  title: input.title?.trim() || '',
+  description: input.description?.trim() || '',
+  agendaType: input.agendaType || 'Other',
+  date: input.date,
+  startTime: input.startTime,
+  endTime: input.endTime || '',
+  location: input.location?.trim() || '',
+  priority: input.priority || 'Medium',
+  reminderMinutes: Number(input.reminderMinutes || 0),
+  status: input.status || 'Upcoming',
+  ...(input.completedAt !== undefined ? { completedAt: input.completedAt } : {}),
+})
+
+const dateBefore = (date) => toDateKey(addDays(fromDateKey(date), -1))
+
+export function AppProvider({ children }) {
+  const [user, setUser] = useState(null)
   const [activities, setActivities] = useState([])
   const [completions, setCompletions] = useState([])
   const [agendas, setAgendas] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [authLoading, setAuthLoading] = useState(!isDemoMode)
+  const [loading, setLoading] = useState(false)
+  const [authLoading, setAuthLoading] = useState(true)
   const [toast, setToast] = useState(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('myactivity-theme') || 'light')
 
@@ -49,147 +118,176 @@ export function AppProvider({ children }) {
     setToast({ id: Date.now(), message, type })
   }, [])
 
-  const loadData = useCallback(async () => {
-    setLoading(true)
-    try {
-      if (isDemoMode) {
-        const state = getStoredState()
-        setActivities(state.activities)
-        setCompletions(state.completions)
-        setAgendas(state.agendas)
-      } else {
-        const data = await apiRequest('/api/bootstrap')
-        setActivities(data.activities)
-        setCompletions(data.completions)
-        setAgendas(data.agendas)
-      }
-    } catch (error) {
-      notify(error.message || 'Gagal memuat aktivitas.', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [notify])
-
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('myactivity-theme', theme)
   }, [theme])
 
   useEffect(() => {
-    const checkSession = async () => {
-      if (isDemoMode) {
-        setAuthLoading(false)
-        if (user) await loadData()
-        else setLoading(false)
-        return
-      }
-      try {
-        const data = await apiRequest('/api/auth/session')
-        setUser(data.user)
-        await loadData()
-      } catch {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        setUser({
+          id: firebaseUser.uid,
+          username: firebaseUser.displayName || 'Pengguna',
+          isDemo: false,
+        })
+      } else if (localStorage.getItem(DEMO_SESSION_KEY)) {
+        setUser({ ...demoUser, isDemo: true })
+      } else {
         setUser(null)
-        setLoading(false)
-      } finally {
-        setAuthLoading(false)
       }
-    }
-    checkSession()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+      setAuthLoading(false)
+    })
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
-    if (!isDemoMode || !user || loading) return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ activities, completions, agendas }))
-  }, [activities, completions, agendas, loading, user])
-
-  const login = async ({ username, password }) => {
-    if (isDemoMode) {
-      const users = JSON.parse(localStorage.getItem('myactivity-demo-users') || '[]')
-      const match = users.find((item) => item.username.toLowerCase() === username.toLowerCase())
-      if (username.toLowerCase() === 'galih') {
-        if (password !== 'demo123') throw new Error('Password yang kamu masukkan salah.')
-      } else {
-        if (!match) throw new Error('Username tidak ditemukan.')
-        if (match.passwordHash !== (await hashPassword(password))) {
-          throw new Error('Password yang kamu masukkan salah.')
-        }
-      }
-      const current = match ? { id: match.id, username: match.username } : demoUser
-      localStorage.setItem(SESSION_KEY, current.id)
-      setUser(current)
-      await loadData()
-      return
-    }
-    const data = await apiRequest('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    })
-    setUser(data.user)
-    await loadData()
-  }
-
-  const register = async ({ username, password }) => {
-    if (isDemoMode) {
-      const users = JSON.parse(localStorage.getItem('myactivity-demo-users') || '[]')
-      if (
-        username.toLowerCase() === 'galih' ||
-        users.some((item) => item.username.toLowerCase() === username.toLowerCase())
-      ) {
-        throw new Error('Username sudah digunakan.')
-      }
-      const newUser = {
-        id: crypto.randomUUID(),
-        username,
-        passwordHash: await hashPassword(password),
-      }
-      localStorage.setItem('myactivity-demo-users', JSON.stringify([...users, newUser]))
-      localStorage.setItem(SESSION_KEY, newUser.id)
-      setUser({ id: newUser.id, username })
+    if (!user) {
       setActivities([])
       setCompletions([])
       setAgendas([])
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ activities: [], completions: [], agendas: [] }))
       setLoading(false)
-      return
+      return undefined
     }
-    const data = await apiRequest('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    })
-    setUser(data.user)
-    await loadData()
+
+    if (user.isDemo) {
+      const state = getDemoState()
+      setActivities(state.activities)
+      setCompletions(state.completions)
+      setAgendas(state.agendas)
+      setLoading(false)
+      return undefined
+    }
+
+    setLoading(true)
+    let readyCount = 0
+    const markReady = () => {
+      readyCount += 1
+      if (readyCount >= 3) setLoading(false)
+    }
+    const handleError = (error) => {
+      notify(firebaseErrorMessage(error), 'error')
+      setLoading(false)
+    }
+    const userPath = ['users', user.id]
+    const unsubActivities = onSnapshot(
+      collection(db, ...userPath, 'activities'),
+      (snapshot) => {
+        setActivities(serializeSnapshot(snapshot))
+        markReady()
+      },
+      handleError,
+    )
+    const unsubCompletions = onSnapshot(
+      collection(db, ...userPath, 'completions'),
+      (snapshot) => {
+        setCompletions(serializeSnapshot(snapshot))
+        markReady()
+      },
+      handleError,
+    )
+    const unsubAgendas = onSnapshot(
+      collection(db, ...userPath, 'agendas'),
+      (snapshot) => {
+        setAgendas(serializeSnapshot(snapshot))
+        markReady()
+      },
+      handleError,
+    )
+
+    return () => {
+      unsubActivities()
+      unsubCompletions()
+      unsubAgendas()
+    }
+  }, [user, notify])
+
+  useEffect(() => {
+    if (!user?.isDemo || loading) return
+    localStorage.setItem(
+      DEMO_STORAGE_KEY,
+      JSON.stringify({ activities, completions, agendas }),
+    )
+  }, [activities, completions, agendas, loading, user])
+
+  const login = async ({ username, password }) => {
+    try {
+      const credential = await signInWithEmailAndPassword(
+        auth,
+        usernameToEmail(username),
+        password,
+      )
+      localStorage.removeItem(DEMO_SESSION_KEY)
+      setUser({
+        id: credential.user.uid,
+        username: credential.user.displayName || username.trim(),
+        isDemo: false,
+      })
+    } catch (error) {
+      throw new Error(firebaseErrorMessage(error))
+    }
+  }
+
+  const register = async ({ username, password }) => {
+    try {
+      const cleanUsername = username.trim()
+      const credential = await createUserWithEmailAndPassword(
+        auth,
+        usernameToEmail(cleanUsername),
+        password,
+      )
+      await updateProfile(credential.user, { displayName: cleanUsername })
+      await setDoc(doc(db, 'users', credential.user.uid), {
+        username: cleanUsername,
+        usernameNormalized: cleanUsername.toLowerCase(),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+      localStorage.removeItem(DEMO_SESSION_KEY)
+      setUser({ id: credential.user.uid, username: cleanUsername, isDemo: false })
+    } catch (error) {
+      throw new Error(firebaseErrorMessage(error))
+    }
+  }
+
+  const loginDemo = async () => {
+    if (auth.currentUser) await signOut(auth)
+    localStorage.setItem(DEMO_SESSION_KEY, 'true')
+    setUser({ ...demoUser, isDemo: true })
   }
 
   const logout = async () => {
-    if (!isDemoMode) await apiRequest('/api/auth/logout', { method: 'POST' })
-    localStorage.removeItem(SESSION_KEY)
+    localStorage.removeItem(DEMO_SESSION_KEY)
+    if (auth.currentUser) await signOut(auth)
     setUser(null)
-    setActivities([])
-    setCompletions([])
-    setAgendas([])
   }
 
   const addActivity = async (input) => {
+    const ref = user.isDemo
+      ? { id: crypto.randomUUID() }
+      : doc(collection(db, 'users', user.id, 'activities'))
     const optimistic = {
-      ...input,
-      id: crypto.randomUUID(),
+      ...activityPayload(input),
+      id: ref.id,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
     setActivities((current) => [...current, optimistic])
+    if (user.isDemo) {
+      notify('Aktivitas berhasil ditambahkan.')
+      return optimistic
+    }
     try {
-      if (!isDemoMode) {
-        const data = await apiRequest('/api/activities', {
-          method: 'POST',
-          body: JSON.stringify(input),
-        })
-        setActivities((current) => current.map((item) => (item.id === optimistic.id ? data.activity : item)))
-      }
+      await setDoc(ref, {
+        ...activityPayload(input),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
       notify('Aktivitas berhasil ditambahkan.')
       return optimistic
     } catch (error) {
-      setActivities((current) => current.filter((item) => item.id !== optimistic.id))
-      notify(error.message, 'error')
+      setActivities((current) => current.filter((item) => item.id !== ref.id))
+      notify(firebaseErrorMessage(error), 'error')
       throw error
     }
   }
@@ -206,35 +304,81 @@ export function AppProvider({ children }) {
             ? { ...item, excludedDates: [...new Set([...(item.excludedDates || []), date])] }
             : item,
         ),
-        { ...activity, ...input, id: crypto.randomUUID(), repeatType: 'once', startDate: date, endDate: date },
+        {
+          ...activityPayload({ ...activity, ...input }),
+          id: crypto.randomUUID(),
+          repeatType: 'once',
+          startDate: date,
+          endDate: date,
+        },
       ])
     } else if (scope === 'future' && date) {
-      const previousDay = toDateKey(addDays(fromDateKey(date), -1))
       setActivities((current) => [
-        ...current.map((item) => (item.id === id ? { ...item, endDate: previousDay } : item)),
-        { ...activity, ...input, id: crypto.randomUUID(), startDate: date },
+        ...current.map((item) => (item.id === id ? { ...item, endDate: dateBefore(date) } : item)),
+        {
+          ...activityPayload({ ...activity, ...input }),
+          id: crypto.randomUUID(),
+          startDate: date,
+        },
       ])
     } else {
-      setActivities((current) => current.map((item) => (item.id === id ? { ...item, ...input } : item)))
+      setActivities((current) =>
+        current.map((item) => (item.id === id ? { ...item, ...activityPayload(input) } : item)),
+      )
     }
 
+    if (user.isDemo) {
+      notify('Aktivitas berhasil diperbarui.')
+      return
+    }
     try {
-      if (!isDemoMode) {
-        await apiRequest(`/api/activities/${id}`, {
-          method: 'PUT',
-          body: JSON.stringify({ ...input, scope, date }),
+      const sourceRef = doc(db, 'users', user.id, 'activities', id)
+      if (scope === 'date' && date) {
+        const replacementRef = doc(collection(db, 'users', user.id, 'activities'))
+        const batch = writeBatch(db)
+        batch.update(sourceRef, {
+          excludedDates: arrayUnion(date),
+          updatedAt: serverTimestamp(),
         })
-        await loadData()
+        batch.set(replacementRef, {
+          ...activityPayload({ ...activity, ...input }),
+          repeatType: 'once',
+          repeatDays: [],
+          startDate: date,
+          endDate: date,
+          excludedDates: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+        await batch.commit()
+      } else if (scope === 'future' && date) {
+        const replacementRef = doc(collection(db, 'users', user.id, 'activities'))
+        const batch = writeBatch(db)
+        batch.update(sourceRef, { endDate: dateBefore(date), updatedAt: serverTimestamp() })
+        batch.set(replacementRef, {
+          ...activityPayload({ ...activity, ...input }),
+          startDate: date,
+          excludedDates: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+        await batch.commit()
+      } else {
+        await updateDoc(sourceRef, {
+          ...activityPayload(input),
+          updatedAt: serverTimestamp(),
+        })
       }
       notify('Aktivitas berhasil diperbarui.')
     } catch (error) {
       setActivities(previous)
-      notify(error.message, 'error')
+      notify(firebaseErrorMessage(error), 'error')
     }
   }
 
   const deleteActivity = async (id, scope = 'all', date = null) => {
-    const previous = clone(activities)
+    const previousActivities = clone(activities)
+    const previousCompletions = clone(completions)
     if (scope === 'date' && date) {
       setActivities((current) =>
         current.map((item) =>
@@ -244,26 +388,46 @@ export function AppProvider({ children }) {
         ),
       )
     } else if (scope === 'future' && date) {
-      const previousDay = toDateKey(addDays(fromDateKey(date), -1))
       setActivities((current) =>
-        current.map((item) => (item.id === id ? { ...item, endDate: previousDay } : item)),
+        current.map((item) => (item.id === id ? { ...item, endDate: dateBefore(date) } : item)),
       )
     } else {
       setActivities((current) => current.filter((item) => item.id !== id))
       setCompletions((current) => current.filter((item) => item.activityId !== id))
     }
 
+    if (user.isDemo) {
+      notify('Aktivitas berhasil dihapus.')
+      return
+    }
     try {
-      if (!isDemoMode) {
-        await apiRequest(`/api/activities/${id}`, {
-          method: 'DELETE',
-          body: JSON.stringify({ scope, date }),
+      const activityRef = doc(db, 'users', user.id, 'activities', id)
+      if (scope === 'date' && date) {
+        await updateDoc(activityRef, {
+          excludedDates: arrayUnion(date),
+          updatedAt: serverTimestamp(),
         })
+      } else if (scope === 'future' && date) {
+        await updateDoc(activityRef, {
+          endDate: dateBefore(date),
+          updatedAt: serverTimestamp(),
+        })
+      } else {
+        const completionQuery = query(
+          collection(db, 'users', user.id, 'completions'),
+          where('activityId', '==', id),
+        )
+        const completionDocs = await getDocs(completionQuery)
+        const batch = writeBatch(db)
+        batch.delete(activityRef)
+        completionDocs.forEach((item) => batch.delete(item.ref))
+        await batch.commit()
       }
       notify('Aktivitas berhasil dihapus.')
     } catch (error) {
-      setActivities(previous)
-      notify(error.message, 'error')
+      setActivities(previousActivities)
+      setCompletions(previousCompletions)
+      notify(firebaseErrorMessage(error), 'error')
     }
   }
 
@@ -273,8 +437,9 @@ export function AppProvider({ children }) {
     )
     const completed = !existing?.completed
     const previous = clone(completions)
+    const completionId = `${activityId}_${completionDate}`
     const next = {
-      id: existing?.id || crypto.randomUUID(),
+      id: completionId,
       activityId,
       completionDate,
       completed,
@@ -286,67 +451,91 @@ export function AppProvider({ children }) {
       ),
       next,
     ])
+    if (user.isDemo) return
     try {
-      if (!isDemoMode) {
-        await apiRequest(`/api/activities/${activityId}/completion`, {
-          method: 'PUT',
-          body: JSON.stringify({ completionDate, completed }),
-        })
-      }
+      await setDoc(
+        doc(db, 'users', user.id, 'completions', completionId),
+        {
+          activityId,
+          completionDate,
+          completed,
+          completedAt: completed ? serverTimestamp() : null,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
     } catch (error) {
       setCompletions(previous)
-      notify('Status aktivitas gagal diperbarui.', 'error')
+      notify(firebaseErrorMessage(error), 'error')
     }
   }
 
   const addAgenda = async (input) => {
-    const optimistic = { ...input, id: crypto.randomUUID(), status: 'Upcoming' }
+    const ref = user.isDemo
+      ? { id: crypto.randomUUID() }
+      : doc(collection(db, 'users', user.id, 'agendas'))
+    const optimistic = { ...agendaPayload(input), id: ref.id, status: 'Upcoming' }
     setAgendas((current) => [...current, optimistic])
+    if (user.isDemo) {
+      notify('Agenda berhasil dibuat.')
+      return optimistic
+    }
     try {
-      if (!isDemoMode) {
-        const data = await apiRequest('/api/agendas', {
-          method: 'POST',
-          body: JSON.stringify(input),
-        })
-        setAgendas((current) => current.map((item) => (item.id === optimistic.id ? data.agenda : item)))
-      }
+      await setDoc(ref, {
+        ...agendaPayload(input),
+        status: 'Upcoming',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
       notify('Agenda berhasil dibuat.')
       return optimistic
     } catch (error) {
-      setAgendas((current) => current.filter((item) => item.id !== optimistic.id))
-      notify(error.message, 'error')
+      setAgendas((current) => current.filter((item) => item.id !== ref.id))
+      notify(firebaseErrorMessage(error), 'error')
       throw error
     }
   }
 
   const updateAgenda = async (id, input) => {
     const previous = clone(agendas)
-    setAgendas((current) => current.map((item) => (item.id === id ? { ...item, ...input } : item)))
+    setAgendas((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...agendaPayload(input) } : item)),
+    )
+    if (user.isDemo) {
+      notify('Agenda berhasil diperbarui.')
+      return
+    }
     try {
-      if (!isDemoMode) {
-        await apiRequest(`/api/agendas/${id}`, { method: 'PUT', body: JSON.stringify(input) })
-      }
+      await updateDoc(doc(db, 'users', user.id, 'agendas', id), {
+        ...agendaPayload(input),
+        updatedAt: serverTimestamp(),
+      })
       notify('Agenda berhasil diperbarui.')
     } catch (error) {
       setAgendas(previous)
-      notify(error.message, 'error')
+      notify(firebaseErrorMessage(error), 'error')
     }
   }
 
   const deleteAgenda = async (id) => {
     const previous = clone(agendas)
     setAgendas((current) => current.filter((item) => item.id !== id))
+    if (user.isDemo) {
+      notify('Agenda berhasil dihapus.')
+      return
+    }
     try {
-      if (!isDemoMode) await apiRequest(`/api/agendas/${id}`, { method: 'DELETE' })
+      await deleteDoc(doc(db, 'users', user.id, 'agendas', id))
       notify('Agenda berhasil dihapus.')
     } catch (error) {
       setAgendas(previous)
-      notify(error.message, 'error')
+      notify(firebaseErrorMessage(error), 'error')
     }
   }
 
   const completeAgenda = (agenda) =>
     updateAgenda(agenda.id, {
+      ...agenda,
       status: agenda.status === 'Completed' ? 'Upcoming' : 'Completed',
       completedAt: agenda.status === 'Completed' ? null : new Date().toISOString(),
     })
@@ -363,11 +552,12 @@ export function AppProvider({ children }) {
       setToast,
       theme,
       setTheme,
-      isDemoMode,
+      isDemoMode: Boolean(user?.isDemo),
+      demoAvailable: true,
       login,
       register,
+      loginDemo,
       logout,
-      loadData,
       addActivity,
       updateActivity,
       deleteActivity,

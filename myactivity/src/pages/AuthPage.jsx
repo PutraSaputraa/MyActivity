@@ -14,7 +14,7 @@ import { useApp } from '../context/AppContext'
 import Logo from '../components/Logo'
 
 export default function AuthPage() {
-  const { login, register, isDemoMode } = useApp()
+  const { login, register, loginDemo, demoAvailable } = useApp()
   const [mode, setMode] = useState('login')
   const [form, setForm] = useState({ username: '', password: '', confirmPassword: '' })
   const [showPassword, setShowPassword] = useState(false)
@@ -57,7 +57,7 @@ export default function AuthPage() {
   const enterDemo = async () => {
     setSubmitting(true)
     try {
-      await login({ username: 'galih', password: 'demo123' })
+      await loginDemo()
     } catch (error) {
       setErrors({ form: error.message })
     } finally {
@@ -159,13 +159,13 @@ export default function AuthPage() {
               {!submitting && <ArrowRight size={18} />}
             </button>
           </form>
-          {isDemoMode && (
+          {demoAvailable && (
             <div className="demo-entry">
               <span>atau coba tanpa membuat akun</span>
               <button type="button" className="button button--outline button--wide" onClick={enterDemo} disabled={submitting}>
                 Lihat dashboard demo
               </button>
-              <small>Demo: galih / demo123</small>
+              <small>Tidak memerlukan akun Firebase</small>
             </div>
           )}
           <p className="auth-switch">
@@ -179,4 +179,3 @@ export default function AuthPage() {
     </div>
   )
 }
-

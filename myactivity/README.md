@@ -1,89 +1,68 @@
 # MyActivity
 
-Aplikasi full-stack untuk mencatat aktivitas berulang, menyelesaikan rutinitas harian, membangun streak, dan mengelola agenda berbasis kalender.
+Aplikasi aktivitas dan agenda berbasis React, Firebase Authentication, dan Cloud Firestore. Frontend dapat di-deploy langsung ke Netlify tanpa Cloud Functions dan tanpa paket Blaze.
 
 ## Fitur utama
 
-- Login dan register berbasis username/password.
-- Password di-hash dengan bcrypt dan session disimpan sebagai JWT dalam cookie HTTP-only.
-- Activity, ActivityCompletion, dan Agenda disimpan sebagai koleksi terpisah.
+- Login dan register menggunakan username/password.
+- Password dan session dikelola oleh Firebase Authentication.
+- Activity, ActivityCompletion, dan Agenda disimpan sebagai subkoleksi pengguna yang terpisah.
+- Sinkronisasi data realtime melalui Firestore `onSnapshot`.
 - Weekly activity board, optimistic completion, Current Streak, dan Perfect Streak.
-- Kalender bulanan, detail tanggal, pencarian, filter, status agenda dinamis, dan pengingat dalam aplikasi.
+- Kalender bulanan, pencarian, filter, status agenda, dan pengingat dalam aplikasi.
 - Edit/hapus aktivitas berulang untuk satu tanggal, jadwal berikutnya, atau seluruh rangkaian.
-- Responsive drawer/bottom navigation, modal bottom sheet, light mode, dan dark mode.
-- Firestore hanya dapat diakses melalui Cloud Functions; Security Rules menolak akses browser langsung.
+- Responsive drawer/bottom navigation, light mode, dark mode, dan mode demo lokal.
 
-## Menjalankan UI
+## Konfigurasi Firebase
+
+Project sudah tersambung ke Firebase Project ID `myactivity-2d817` melalui `src/firebase.js`.
+
+Sebelum memakai akun production:
+
+1. Buka **Firebase Console → Authentication → Sign-in method**.
+2. Aktifkan provider **Email/Password**.
+3. Tambahkan domain Netlify di **Authentication → Settings → Authorized domains**.
+4. Terapkan isi `firestore.rules` melalui tab Firestore Rules, lalu klik **Publish**.
+
+Antarmuka tetap meminta username. Di belakang layar, username dinormalisasi menjadi identitas email internal untuk Firebase Authentication. Pengguna tidak perlu mengetahui atau mengetik email internal tersebut.
+
+## Struktur Firestore
+
+```text
+users/{uid}
+  activities/{activityId}
+  completions/{activityId_date}
+  agendas/{agendaId}
+```
+
+Firestore Rules membatasi seluruh dokumen dan subkoleksi agar hanya dapat diakses ketika `request.auth.uid` sama dengan `{uid}` pada path.
+
+## Menjalankan lokal
 
 ```bash
 npm install
 npm run dev
 ```
 
-Tanpa `VITE_API_BASE_URL`, aplikasi otomatis berjalan dalam mode demo lokal. Klik **Lihat dashboard demo** atau gunakan:
+Klik **Lihat dashboard demo** untuk mencoba tanpa akun Firebase. Data demo disimpan di `localStorage`.
+
+## Deploy Netlify melalui Git
+
+Konfigurasi deployment berada di `../netlify.toml` karena root Git adalah folder induk `Activity`.
 
 ```text
-username: galih
-password: demo123
+Base directory: myactivity
+Build command: npm run build
+Publish directory: dist
 ```
 
-Mode demo menyimpan perubahan ke `localStorage`, sehingga seluruh interaksi UI dapat dicoba tanpa Firebase.
+Push source repository seperti biasa. Jangan membuat environment variable `VITE_API_BASE_URL`; browser berkomunikasi langsung dengan Firebase SDK.
 
-## Deploy ke Netlify
+## Firestore Rules via CLI
 
-Untuk deploy melalui repository, gunakan konfigurasi `netlify.toml` yang sudah tersedia. Netlify akan menjalankan `npm run build` dan mempublikasikan folder `dist`.
-
-Untuk manual drag-and-drop, jalankan `npm run build`, lalu upload **isi folder `dist`** atau file `myactivity-netlify.zip`. Jangan upload folder induk proyek. File `_redirects` sudah disertakan agar fallback SPA tidak menghasilkan halaman 404.
-
-Deploy Netlify tanpa backend Firebase akan otomatis berjalan dalam mode demo lokal.
-
-## Menyambungkan Firebase
-
-1. Buat Firebase project dan aktifkan Firestore Database.
-2. Instal Firebase CLI dan login.
-3. Project ini sudah diarahkan ke Firebase Project ID `myactivity-2d817` melalui `.firebaserc`.
-4. Salin `.env.example` menjadi `.env`.
-5. Buat secret JWT:
+Jika Firebase CLI sudah terpasang dan login:
 
 ```bash
-firebase functions:secrets:set JWT_SECRET
+firebase deploy --only firestore:rules,firestore:indexes
 ```
 
-6. Salin `functions/.env.example` menjadi `functions/.env`. Untuk production, isi `WEB_APP_ORIGIN` dengan domain Firebase Hosting dan set `COOKIE_SECURE=true`.
-7. Deploy:
-
-```bash
-npm run build
-npm run firebase:deploy
-```
-
-Firebase Hosting meneruskan `/api/**` ke Cloud Function `api`, sehingga cookie session tetap first-party.
-
-> Cloud Functions memerlukan paket Blaze untuk deployment production. Paket ini tetap memiliki kuota tanpa biaya, tetapi billing account harus ditautkan. Mode demo lokal dan Firebase Emulator tetap dapat digunakan pada paket Spark.
-
-## Menjalankan Firebase Emulator
-
-Ubah sementara `.env` menjadi:
-
-```text
-VITE_API_BASE_URL=http://127.0.0.1:5001/YOUR_FIREBASE_PROJECT_ID/asia-southeast2/api
-```
-
-Set `COOKIE_SECURE=false` di `functions/.env`, kemudian jalankan emulator dan Vite pada dua terminal:
-
-```bash
-npm run firebase:emulators
-npm run dev
-```
-
-## Struktur Firestore
-
-```text
-users/{userId}
-usernames/{normalizedUsername}
-activities/{activityId}
-activityCompletions/{activityId_date}
-agendas/{agendaId}
-```
-
-Setiap Activity, ActivityCompletion, dan Agenda memiliki `userId`. Semua endpoint memverifikasi kepemilikan dokumen sebelum membaca atau mengubah data.

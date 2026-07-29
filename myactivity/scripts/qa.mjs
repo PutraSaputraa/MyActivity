@@ -26,7 +26,7 @@ page.on('pageerror', (error) => consoleErrors.push(error.message))
 try {
   await page.goto(baseUrl, { waitUntil: 'networkidle' })
   await page.getByRole('heading', { name: 'Masuk ke akunmu' }).waitFor()
-  assert.equal(await page.getByText('Demo: galih / demo123').isVisible(), true)
+  assert.equal(await page.getByText('Tidak memerlukan akun Firebase').isVisible(), true)
   await page.screenshot({ path: artifactPath('01-login.png'), fullPage: true })
 
   await page.getByRole('button', { name: 'Lihat dashboard demo' }).click()
