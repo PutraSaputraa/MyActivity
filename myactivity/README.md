@@ -29,6 +29,14 @@ password: demo123
 
 Mode demo menyimpan perubahan ke `localStorage`, sehingga seluruh interaksi UI dapat dicoba tanpa Firebase.
 
+## Deploy ke Netlify
+
+Untuk deploy melalui repository, gunakan konfigurasi `netlify.toml` yang sudah tersedia. Netlify akan menjalankan `npm run build` dan mempublikasikan folder `dist`.
+
+Untuk manual drag-and-drop, jalankan `npm run build`, lalu upload **isi folder `dist`** atau file `myactivity-netlify.zip`. Jangan upload folder induk proyek. File `_redirects` sudah disertakan agar fallback SPA tidak menghasilkan halaman 404.
+
+Deploy Netlify tanpa backend Firebase akan otomatis berjalan dalam mode demo lokal.
+
 ## Menyambungkan Firebase
 
 1. Buat Firebase project dan aktifkan Firestore Database.
