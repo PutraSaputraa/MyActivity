@@ -52,6 +52,12 @@ const usernameToEmail = (username) => {
 const firebaseErrorMessage = (error) => {
   const messages = {
     'auth/email-already-in-use': 'Username sudah digunakan.',
+    'auth/configuration-not-found':
+      'Firebase Authentication belum diaktifkan. Aktifkan metode Email/Password di Firebase Console.',
+    'auth/operation-not-allowed':
+      'Login Email/Password belum diaktifkan di Firebase Console.',
+    'auth/unauthorized-domain':
+      'Domain website ini belum ditambahkan ke Authorized domains Firebase.',
     'auth/invalid-email': 'Format username tidak valid.',
     'auth/invalid-credential': 'Username atau password salah.',
     'auth/user-not-found': 'Username tidak ditemukan.',
@@ -579,4 +585,3 @@ export function AppProvider({ children }) {
 }
 
 export const useApp = () => useContext(AppContext)
-
